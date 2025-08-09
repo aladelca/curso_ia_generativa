@@ -1,0 +1,6 @@
+flowchart LR
+  subgraph W["Contexto (ventana N tokens)"]
+    direction LR
+    T1[T1] --> T2[T2] --> T3[T3] --> T4[T4] --> Tn[Tn]
+  end
+  O[Tokens fuera de ventana] -. descartados .- W

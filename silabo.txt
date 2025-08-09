@@ -1,0 +1,76 @@
+SESIÓN 1: ¿Qué es un LLM? y fundamentos de su uso
+● ¿Qué es un modelo de lenguaje grande (LLM)?
+● Comparativa: GPT (OpenAI), Claude (Anthropic), Gemini (Google)
+● Casos de uso: generación de texto, análisis semántico, resumen, asistencias inteligentes
+● Interfaces y herramientas: ChatGPT, Claude, Notion AI, Copilot
+● Exploración guiada con ChatGPT o Gemini en tareas de productividad, análisis o generación de contenidos.
+
+
+SESIÓN 2: Prompt engineering y ética en IA
+● Fundamentos del prompt engineering: estructura, claridad, contexto
+● Técnicas básicas: few-shot prompting, instrucciones, formato de respuesta
+● Sesgos, alucinaciones y límites de los LLMs
+● Uso responsable de IA generativa: privacidad, derechos de autor, transparencia
+
+SESIÓN 3: Generación y comprensión de código con IA
+● ¿Qué es la programación asistida por IA?
+● Introducción a ChatGPT, Claude y GitHub Copilot como asistentes de código
+● Generación de funciones, scripts y estructuras de programas
+● Explicación y documentación de código existente
+● Buenas prácticas y validación del código generado
+
+
+SESIÓN 3: Integración práctica en entornos de desarrollo
+● Configuración de GitHub Copilot en VS Code
+● Uso de ChatGPT y Claude en el navegador o mediante extensiones
+● Integración en Google Colab y Jupyter Notebook
+● Limitaciones actuales y consideraciones de uso en entornos profesionales
+● Casos de uso: depuración, refactorización, generación de notebooks explicativos
+● Desarrollo de un mini-proyecto de código asistido con IA desde cero (análisis de datos, automatización o visualización).
+
+
+SESIÓN 4: Introducción a la exploración de datos con IA
+● ¿Qué es el análisis de datos asistido por IA?
+● Copilotos de datos: ChatGPT con Code Interpreter (Advanced Data Analysis), Gemini, Microsoft Copilot
+● Carga e interpretación automatizada de datasets (CSV, Excel, SQL)
+● Generación automática de descripciones, resúmenes y estadísticas básicas
+● Carga de un dataset real y generación automática de insights con un copiloto de datos.
+
+SESIÓN 5: Visualización de datos con IA mediante prompts
+● Diseño de prompts para visualización: claridad, tipo de gráfico, variables
+● Gráficos con herramientas como ChatGPT (Code Interpreter), Gemini o Copilot en Excel
+● Tipos de visualización recomendados por IA según el tipo de variable y objetivo
+● Interpretación crítica de las visualizaciones generadas
+
+
+SESIÓN 6: Generación de insights y reportes asistidos
+● Identificación automática de patrones y anomalías
+● Síntesis de hallazgos y recomendaciones sugeridas por IA
+● Generación de reportes automatizados con texto + gráficos
+● Buenas prácticas para validar y presentar resultados generados por IA
+
+SESIÓN 7: De lenguaje natural a consultas SQL
+● Introducción a asistentes SQL basados en IA: ChatGPT, Gemini, Copilot para SQL
+● Cómo estructurar peticiones efectivas en lenguaje natural
+● Generación de consultas SELECT, JOIN, GROUP BY, HAVING con prompts
+● Validación automática de consultas: revisión, optimización, explicación
+
+
+SESIÓN 8: Proyecto: asistente SQL conversacional
+● Integración de lenguaje natural con SQL: arquitectura básica de asistentes
+● Uso de herramientas como Notebooks, ChatGPT plugins, y entornos low-code (Ej: Text-to-SQL en Azure, DataHerald, SeekWell, etc.)
+● Consideraciones de seguridad, privacidad y control de acceso
+● Creación de un asistente funcional (prototipo) para exploración de datos SQL
+
+SESIÓN 9: Introducción a OpenAI API y LangChain
+● ¿Qué es una API y cómo interactuar con modelos como GPT desde Python?
+● Estructura de una llamada a la OpenAI API (prompts, temperatura, contexto)
+● Introducción a LangChain: agentes, cadenas, herramientas
+● Ejemplos básicos: generación de textos, respuestas contextuales, lectura de archivos
+
+
+SESIÓN 10: Construcción de agentes inteligentes y copilotos personalizados
+● Diseño de agentes que combinan funciones: lectura, análisis, generación
+● Integración con archivos, bases de datos o dashboards
+● Automatización de reportes: input → análisis → output formateado
+● Casos de uso reales: copilotos para tareas repetitivas, respuestas guiadas por IA

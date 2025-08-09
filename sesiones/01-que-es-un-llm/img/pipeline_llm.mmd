@@ -1,0 +1,7 @@
+flowchart LR
+  A[Texto] --> B[Tokenizacion]
+  B --> C[Embeddings]
+  C --> D[Bloques Transformer\nattention y MLP x N]
+  D --> E[Logits]
+  E --> F[Softmax]
+  F --> G[Distribucion de tokens]

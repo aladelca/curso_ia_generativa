@@ -1,0 +1,10 @@
+flowchart LR
+  subgraph D["Discriminativa p(y/x)"]
+    direction LR
+    X["x features"] --> Y["y predicho"]
+  end
+  subgraph G["Generativa p(x), p(x/y)"]
+    direction LR
+    Y2["y opcional"] --> X2["x generado"]
+    E["p(x)"] --> X2
+  end

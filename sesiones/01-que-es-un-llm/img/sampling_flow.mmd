@@ -1,0 +1,8 @@
+flowchart LR
+  A[Logits] --> B[Softmax]
+  B --> C[Distribucion]
+  C --> D{Top-k / Top-p}
+  D --> E[Reweight]
+  E --> F[Temperatura]
+  F --> G[Muestreo token]
+  G --> H[Append al contexto]
