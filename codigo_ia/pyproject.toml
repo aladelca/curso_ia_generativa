@@ -1,0 +1,19 @@
+[tool.mypy]
+python_version = "3.13"
+# Evita ruido por librerías de terceros sin stubs (instalar stubs es recomendado)
+ignore_missing_imports = true
+# Requiere que Optional se declare explícitamente
+no_implicit_optional = true
+warn_unused_ignores = true
+# Archivos a chequear por defecto (puedes cambiar a '.' para todo el repo)
+files = ["src"]
+
+[tool.ruff]
+line-length = 100
+# Habilita correcciones automáticas cuando se llama con --fix
+fix = true
+
+[tool.flake8]
+max-line-length = 100
+# Compatibilidad con formatos de uso común (ajusta según tu preferencia)
+extend-ignore = ["E203", "W503"]
