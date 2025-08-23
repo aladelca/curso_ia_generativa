@@ -1,5 +1,15 @@
+import os
+import sys
 import numpy as np
 import pandas as pd
+
+# Añade codigo_ia/src al sys.path para importar sin paquete
+CURRENT_DIR = os.path.dirname(__file__)
+PROJECT_ROOT = os.path.abspath(os.path.join(CURRENT_DIR, os.pardir))
+SRC_PATH = os.path.join(PROJECT_ROOT, "src")
+if SRC_PATH not in sys.path:
+    sys.path.insert(0, SRC_PATH)
+
 from lag_transformer import LagByGroupDateTransformer  # type: ignore
 
 

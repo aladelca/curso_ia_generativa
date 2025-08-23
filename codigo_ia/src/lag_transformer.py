@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import List, Optional, Sequence
+
 import pandas as pd
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.utils.validation import check_is_fitted
@@ -16,16 +18,16 @@ class LagByGroupDateTransformer(BaseEstimator, TransformerMixin):
 
     def __init__(
         self,
-        nivel_agregacion: list[str],
+        nivel_agregacion: Sequence[str],
         n: int = 1,
         agg_func: str = "sum",
         date_col: str = "Date",
         lag_column: str = "Units Sold",
-        ref_date: str | pd.Timestamp | None = None,
+        ref_date: Optional[pd.Timestamp | str] = None,
         keep_original_date: bool = True,
-    ):
+    ) -> None:
         self.n = int(n)
-        self.nivel_agregacion = nivel_agregacion
+        self.nivel_agregacion = list(nivel_agregacion)
         self.agg_func = agg_func
         self.date_col = date_col
         self.lag_column = lag_column
@@ -80,7 +82,9 @@ class LagByGroupDateTransformer(BaseEstimator, TransformerMixin):
             .reset_index(drop=True)
         )
 
-    def fit(self, X: pd.DataFrame, y=None):
+    def fit(
+        self, X: pd.DataFrame, y: Optional[pd.Series] = None
+    ) -> "LagByGroupDateTransformer":
         X = self._validate_input(X)
 
         # ref_date efectiva: si no se pasó, tomamos hoy (normalizado a medianoche)
@@ -129,10 +133,14 @@ class LagByGroupDateTransformer(BaseEstimator, TransformerMixin):
 
         return out
 
-    def fit_transform(self, X: pd.DataFrame, y=None, **fit_params) -> pd.DataFrame:
+    def fit_transform(
+        self, X: pd.DataFrame, y: Optional[pd.Series] = None, **fit_params: object
+    ) -> pd.DataFrame:
         return self.fit(X, y).transform(X)
 
     # Conveniencia
-    def get_feature_names_out(self, input_features=None):
+    def get_feature_names_out(
+        self, input_features: Optional[List[str]] = None
+    ) -> List[str]:
         check_is_fitted(self, attributes=["_lag_feature_name_"])
         return [self._lag_feature_name_]
