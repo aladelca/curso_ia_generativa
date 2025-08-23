@@ -11,3 +11,8 @@ jupyter>=1.0
 tabulate>=0.9
 plotly>=5.22
 rich>=13.7
+pytest>=8.2
+flake8>=7.1
+ruff>=0.5
+pre-commit>=3.7
+scikit-learn

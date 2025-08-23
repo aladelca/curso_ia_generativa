@@ -1,0 +1,31 @@
+repos:
+  - repo: https://github.com/charliermarsh/ruff-pre-commit
+    rev: v0.6.4
+    hooks:
+      - id: ruff
+        args: [--fix]
+        files: "^codigo_ia/src/.*\\.py$"
+      - id: ruff-format
+        files: "^codigo_ia/src/.*\\.py$"
+
+  - repo: https://github.com/pycqa/flake8
+    rev: 7.1.1
+    hooks:
+      - id: flake8
+        files: "^codigo_ia/src/.*\\.py$"
+
+  - repo: local
+    hooks:
+      - id: r-styler
+        name: styler (R)
+        entry: Rscript -e "if (!requireNamespace('styler', quietly=TRUE)) install.packages('styler', repos='https://cloud.r-project.org'); styler::style_dir('codigo_ia/src')"
+        language: system
+        files: "^codigo_ia/src/.*\\.R$"
+        pass_filenames: false
+      - id: r-lintr
+        name: lintr (R)
+        entry: Rscript -e "if (!requireNamespace('lintr', quietly=TRUE)) install.packages('lintr', repos='https://cloud.r-project.org'); issues <- lintr::lint_dir('codigo_ia/src'); print(issues); q(status = ifelse(length(issues)>0, 1, 0))"
+        language: system
+        files: "^codigo_ia/src/.*\\.R$"
+        pass_filenames: false
+
