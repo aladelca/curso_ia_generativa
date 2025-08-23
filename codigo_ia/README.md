@@ -7,7 +7,7 @@ Requisitos
 Instalación (desde la raíz del proyecto):
 
 .venv/bin/pip install --upgrade pip setuptools wheel
-.venv/bin/pip install mypy ruff flake8 pandas-stubs scikit-learn
+.venv/bin/pip install mypy ruff flake8 pandas-stubs scikit-learn pytest pre-commit
 
 Comprobaciones rápidas
 
@@ -22,11 +22,25 @@ Comprobaciones rápidas
 
 Ejecutar tests
 
-# Instala pytest en el virtualenv
-.venv/bin/pip install pytest
-
-# Ejecuta los tests
+# Ejecuta los tests (pytest ya está instalado en las dependencias)
 .venv/bin/pytest
+
+Pre-commit hooks
+
+# Instala pre-commit
+.venv/bin/pip install pre-commit
+
+# Instala los hooks en el repositorio git
+.venv/bin/pre-commit install
+
+# Ejecuta todos los hooks manualmente (opcional)
+.venv/bin/pre-commit run --all-files
+
+# Los hooks se ejecutarán automáticamente en cada commit y validarán:
+# - Ruff: linting y formateo automático en archivos de src/
+# - Flake8: validaciones de estilo en archivos de src/
+# - MyPy: verificación de tipos en archivos de src/
+# - Pytest: ejecución de tests cuando cambien archivos de src/ o tests/
 
 Notas
 - `pyproject.toml` contiene configuración básica para mypy, ruff y flake8.

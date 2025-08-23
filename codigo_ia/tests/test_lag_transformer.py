@@ -1,24 +1,18 @@
-import os
-import sys
-from typing import Any
-
-import pandas as pd
 import numpy as np
-
-# Asegura que la carpeta src esté en sys.path para poder importar el módulo
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
-
+import pandas as pd
 from lag_transformer import LagByGroupDateTransformer  # type: ignore
 
 
 def _make_df() -> pd.DataFrame:
     return pd.DataFrame(
         {
-            "Date": pd.to_datetime([
-                "2025-08-01",
-                "2025-08-02",
-                "2025-08-03",
-            ]),
+            "Date": pd.to_datetime(
+                [
+                    "2025-08-01",
+                    "2025-08-02",
+                    "2025-08-03",
+                ]
+            ),
             "Store ID": ["A", "A", "A"],
             "Product ID": ["X", "X", "X"],
             "Units Sold": [10, 5, 2],
@@ -50,7 +44,7 @@ def test_lag_values_forward_behavior() -> None:
     actual = out[lag_name].astype(float).tolist()
 
     # Comparación element-wise para manejar NaNs
-    for a, e in zip(actual, expected):
+    for a, e in zip(actual, expected, strict=False):
         if pd.isna(e):
             assert pd.isna(a)
         else:
@@ -59,7 +53,9 @@ def test_lag_values_forward_behavior() -> None:
 
 def test_keep_original_date_flag() -> None:
     df = _make_df()
-    tr = LagByGroupDateTransformer(nivel_agregacion=["Store ID", "Product ID"], n=1, keep_original_date=False)
+    tr = LagByGroupDateTransformer(
+        nivel_agregacion=["Store ID", "Product ID"], n=1, keep_original_date=False
+    )
     out = tr.fit_transform(df.copy())
 
     # El transform con keep_original_date=False debe eliminar la columna Date

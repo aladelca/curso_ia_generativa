@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import List, Optional, Union
+
 import pandas as pd
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.utils.validation import check_is_fitted
@@ -16,12 +16,12 @@ class LagByGroupDateTransformer(BaseEstimator, TransformerMixin):
 
     def __init__(
         self,
-        nivel_agregacion: List[str],
+        nivel_agregacion: list[str],
         n: int = 1,
         agg_func: str = "sum",
         date_col: str = "Date",
         lag_column: str = "Units Sold",
-        ref_date: Optional[Union[str, pd.Timestamp]] = None,
+        ref_date: str | pd.Timestamp | None = None,
         keep_original_date: bool = True,
     ):
         self.n = int(n)
@@ -29,13 +29,17 @@ class LagByGroupDateTransformer(BaseEstimator, TransformerMixin):
         self.agg_func = agg_func
         self.date_col = date_col
         self.lag_column = lag_column
-        self.ref_date = pd.to_datetime(ref_date).normalize() if ref_date is not None else None
+        self.ref_date = (
+            pd.to_datetime(ref_date).normalize() if ref_date is not None else None
+        )
         self.keep_original_date = keep_original_date
 
     def _validate_input(self, X: pd.DataFrame) -> pd.DataFrame:
         X = X.copy()
         if self.date_col not in X.columns:
-            raise ValueError(f"'{self.date_col}' no está en las columnas del DataFrame.")
+            raise ValueError(
+                f"'{self.date_col}' no está en las columnas del DataFrame."
+            )
         for col in self.nivel_agregacion + [self.lag_column]:
             if col not in X.columns:
                 raise ValueError(f"'{col}' no está en las columnas del DataFrame.")
@@ -49,7 +53,9 @@ class LagByGroupDateTransformer(BaseEstimator, TransformerMixin):
         lag_feat = f"lag_{self.lag_column}_{label}_{self.agg_func}_{self.n}"
 
         grp = (
-            X.groupby(self.nivel_agregacion + [self.date_col], dropna=False)[self.lag_column]
+            X.groupby(self.nivel_agregacion + [self.date_col], dropna=False)[
+                self.lag_column
+            ]
             .agg(self.agg_func)
             .reset_index(name=lag_feat)
         )
@@ -68,16 +74,20 @@ class LagByGroupDateTransformer(BaseEstimator, TransformerMixin):
 
         # Nos quedamos con las columnas necesarias para el merge en transform
         lookup_cols = self.nivel_agregacion + ["date_lag", lag_feat]
-        return grp[lookup_cols].sort_values(
-            self.nivel_agregacion + ["date_lag"]
-        ).reset_index(drop=True)
+        return (
+            grp[lookup_cols]
+            .sort_values(self.nivel_agregacion + ["date_lag"])
+            .reset_index(drop=True)
+        )
 
     def fit(self, X: pd.DataFrame, y=None):
         X = self._validate_input(X)
 
         # ref_date efectiva: si no se pasó, tomamos hoy (normalizado a medianoche)
         self._effective_ref_date = (
-            self.ref_date if self.ref_date is not None else pd.Timestamp.today().normalize()
+            self.ref_date
+            if self.ref_date is not None
+            else pd.Timestamp.today().normalize()
         )
 
         # Construye y guarda la tabla lookup
