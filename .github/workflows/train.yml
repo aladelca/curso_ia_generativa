@@ -1,0 +1,220 @@
+name: ML Training Pipeline
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - 'uber/src/**'
+      - 'uber/docker/**'
+      - 'uber/Dockerfile.training'
+      - 'uber/requirements.txt'
+  workflow_dispatch:
+    inputs:
+      use_safe_features:
+        description: 'Usar solo features seguras (sin data leakage)'
+        required: false
+        default: 'true'
+        type: choice
+        options:
+        - 'true'
+        - 'false'
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: uber-ml-training
+  ECS_CLUSTER: uber-ml-cluster
+  ECS_TASK_DEFINITION: uber-ml-training-task
+  S3_BUCKET: uber-ml-models-bucket
+
+jobs:
+  build-and-deploy:
+    name: Build, Push to ECR and Run Training
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+    
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v2
+    
+    - name: Create ECR repository if it doesn't exist
+      run: |
+        aws ecr describe-repositories --repository-names $ECR_REPOSITORY || \
+        aws ecr create-repository --repository-name $ECR_REPOSITORY --region $AWS_REGION
+    
+    - name: Build, tag, and push image to Amazon ECR
+      env:
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        IMAGE_TAG: ${{ github.sha }}
+      run: |
+        cd uber
+        docker build -f Dockerfile.training -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+        docker build -f Dockerfile.training -t $ECR_REGISTRY/$ECR_REPOSITORY:latest .
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+        echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+      id: build-image
+    
+    - name: Create or update ECS cluster
+      run: |
+        # Crear cluster si no existe
+        aws ecs describe-clusters --clusters $ECS_CLUSTER || \
+        aws ecs create-cluster --cluster-name $ECS_CLUSTER
+    
+    - name: Create S3 bucket if it doesn't exist
+      run: |
+        aws s3api head-bucket --bucket $S3_BUCKET 2>/dev/null || \
+        aws s3api create-bucket --bucket $S3_BUCKET --region $AWS_REGION
+    
+    - name: Create IAM role for ECS tasks
+      run: |
+        # Crear rol IAM si no existe
+        aws iam get-role --role-name ecsTaskExecutionRole 2>/dev/null || \
+        aws iam create-role --role-name ecsTaskExecutionRole \
+          --assume-role-policy-document '{
+            "Version": "2012-10-17",
+            "Statement": [
+              {
+                "Effect": "Allow",
+                "Principal": {
+                  "Service": "ecs-tasks.amazonaws.com"
+                },
+                "Action": "sts:AssumeRole"
+              }
+            ]
+          }'
+        
+        # Adjuntar políticas necesarias
+        aws iam attach-role-policy --role-name ecsTaskExecutionRole \
+          --policy-arn arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+        
+        aws iam attach-role-policy --role-name ecsTaskExecutionRole \
+          --policy-arn arn:aws:iam::aws:policy/AmazonS3FullAccess
+    
+    - name: Create ECS task definition
+      env:
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        IMAGE_TAG: ${{ github.sha }}
+      run: |
+        ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+        
+        cat > task-definition.json << EOF
+        {
+          "family": "$ECS_TASK_DEFINITION",
+          "networkMode": "awsvpc",
+          "requiresCompatibilities": ["FARGATE"],
+          "cpu": "1024",
+          "memory": "2048",
+          "executionRoleArn": "arn:aws:iam::${ACCOUNT_ID}:role/ecsTaskExecutionRole",
+          "taskRoleArn": "arn:aws:iam::${ACCOUNT_ID}:role/ecsTaskExecutionRole",
+          "containerDefinitions": [
+            {
+              "name": "training-container",
+              "image": "$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG",
+              "essential": true,
+              "environment": [
+                {
+                  "name": "AWS_DEFAULT_REGION",
+                  "value": "$AWS_REGION"
+                },
+                {
+                  "name": "S3_BUCKET_NAME",
+                  "value": "$S3_BUCKET"
+                },
+                {
+                  "name": "USE_SAFE_FEATURES",
+                  "value": "${{ github.event.inputs.use_safe_features || 'true' }}"
+                }
+              ],
+              "logConfiguration": {
+                "logDriver": "awslogs",
+                "options": {
+                  "awslogs-group": "/ecs/$ECS_TASK_DEFINITION",
+                  "awslogs-region": "$AWS_REGION",
+                  "awslogs-stream-prefix": "ecs"
+                }
+              }
+            }
+          ]
+        }
+        EOF
+        
+        # Crear log group
+        aws logs create-log-group --log-group-name "/ecs/$ECS_TASK_DEFINITION" || true
+        
+        # Registrar task definition
+        aws ecs register-task-definition --cli-input-json file://task-definition.json
+    
+    - name: Run ECS training task
+      run: |
+        # Obtener subnets y security group por defecto
+        VPC_ID=$(aws ec2 describe-vpcs --filters "Name=is-default,Values=true" --query "Vpcs[0].VpcId" --output text)
+        SUBNET_IDS=$(aws ec2 describe-subnets --filters "Name=vpc-id,Values=$VPC_ID" --query "Subnets[0:2].SubnetId" --output text | tr '\t' ',')
+        SECURITY_GROUP_ID=$(aws ec2 describe-security-groups --filters "Name=vpc-id,Values=$VPC_ID" "Name=group-name,Values=default" --query "SecurityGroups[0].GroupId" --output text)
+        
+        # Ejecutar tarea
+        TASK_ARN=$(aws ecs run-task \
+          --cluster $ECS_CLUSTER \
+          --task-definition $ECS_TASK_DEFINITION \
+          --launch-type FARGATE \
+          --network-configuration "awsvpcConfiguration={subnets=[$SUBNET_IDS],securityGroups=[$SECURITY_GROUP_ID],assignPublicIp=ENABLED}" \
+          --query 'tasks[0].taskArn' \
+          --output text)
+        
+        echo "Training task started: $TASK_ARN"
+        echo "task-arn=$TASK_ARN" >> $GITHUB_OUTPUT
+      id: run-task
+    
+    - name: Wait for training completion
+      run: |
+        echo "Esperando que el entrenamiento termine..."
+        aws ecs wait tasks-stopped --cluster $ECS_CLUSTER --tasks ${{ steps.run-task.outputs.task-arn }}
+        
+        # Verificar el estado final
+        TASK_STATUS=$(aws ecs describe-tasks --cluster $ECS_CLUSTER --tasks ${{ steps.run-task.outputs.task-arn }} --query 'tasks[0].lastStatus' --output text)
+        EXIT_CODE=$(aws ecs describe-tasks --cluster $ECS_CLUSTER --tasks ${{ steps.run-task.outputs.task-arn }} --query 'tasks[0].containers[0].exitCode' --output text)
+        
+        echo "Task status: $TASK_STATUS"
+        echo "Exit code: $EXIT_CODE"
+        
+        if [ "$EXIT_CODE" != "0" ]; then
+          echo "Training failed with exit code: $EXIT_CODE"
+          exit 1
+        fi
+        
+        echo "✅ Training completed successfully!"
+    
+    - name: Verify model upload to S3
+      run: |
+        echo "Verificando que el modelo se subió a S3..."
+        LATEST_MODEL=$(aws s3 ls s3://$S3_BUCKET/models/ --recursive | sort | tail -n 1 | awk '{print $4}')
+        
+        if [ -z "$LATEST_MODEL" ]; then
+          echo "❌ No se encontró ningún modelo en S3"
+          exit 1
+        fi
+        
+        echo "✅ Modelo encontrado en S3: $LATEST_MODEL"
+        echo "model-path=s3://$S3_BUCKET/$LATEST_MODEL" >> $GITHUB_OUTPUT
+      id: verify-model
+    
+    - name: Update deployment status
+      if: always()
+      run: |
+        if [ "${{ job.status }}" == "success" ]; then
+          echo "🎉 Training pipeline completed successfully!"
+          echo "📍 Model location: ${{ steps.verify-model.outputs.model-path }}"
+        else
+          echo "❌ Training pipeline failed"
+        fi

@@ -1,0 +1,300 @@
+name: ML Prediction Lambda Deploy
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - 'uber/src/**'
+      - 'uber/lambda/**'
+      - 'uber/Dockerfile.lambda'
+      - 'uber/requirements-lambda.txt'
+  workflow_dispatch:
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: uber-ml-prediction
+  LAMBDA_FUNCTION_NAME: uber-driver-prediction
+  S3_BUCKET: uber-ml-models-bucket
+
+jobs:
+  deploy-lambda:
+    name: Build, Push to ECR and Deploy Lambda
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+    
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v2
+    
+    - name: Create ECR repository if it doesn't exist
+      run: |
+        aws ecr describe-repositories --repository-names $ECR_REPOSITORY || \
+        aws ecr create-repository --repository-name $ECR_REPOSITORY --region $AWS_REGION
+    
+    - name: Build, tag, and push image to Amazon ECR
+      env:
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        IMAGE_TAG: ${{ github.sha }}
+      run: |
+        cd uber
+        docker build -f Dockerfile.lambda -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+        docker build -f Dockerfile.lambda -t $ECR_REGISTRY/$ECR_REPOSITORY:latest .
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+        echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+      id: build-image
+    
+    - name: Create S3 bucket if it doesn't exist
+      run: |
+        aws s3api head-bucket --bucket $S3_BUCKET 2>/dev/null || \
+        aws s3api create-bucket --bucket $S3_BUCKET --region $AWS_REGION
+    
+    - name: Create IAM role for Lambda
+      run: |
+        ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+        
+        # Crear rol IAM para Lambda si no existe
+        aws iam get-role --role-name lambda-execution-role 2>/dev/null || \
+        aws iam create-role --role-name lambda-execution-role \
+          --assume-role-policy-document '{
+            "Version": "2012-10-17",
+            "Statement": [
+              {
+                "Effect": "Allow",
+                "Principal": {
+                  "Service": "lambda.amazonaws.com"
+                },
+                "Action": "sts:AssumeRole"
+              }
+            ]
+          }'
+        
+        # Adjuntar políticas necesarias
+        aws iam attach-role-policy --role-name lambda-execution-role \
+          --policy-arn arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        
+        aws iam attach-role-policy --role-name lambda-execution-role \
+          --policy-arn arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess
+        
+        # Esperar un momento para que el rol se propague
+        sleep 10
+        
+        echo "lambda-role-arn=arn:aws:iam::${ACCOUNT_ID}:role/lambda-execution-role" >> $GITHUB_OUTPUT
+      id: create-role
+    
+    - name: Create or update Lambda function
+      env:
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        IMAGE_TAG: ${{ github.sha }}
+      run: |
+        IMAGE_URI="$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+        
+        # Verificar si la función existe
+        if aws lambda get-function --function-name $LAMBDA_FUNCTION_NAME 2>/dev/null; then
+          echo "Actualizando función Lambda existente..."
+          aws lambda update-function-code \
+            --function-name $LAMBDA_FUNCTION_NAME \
+            --image-uri $IMAGE_URI
+            
+          aws lambda update-function-configuration \
+            --function-name $LAMBDA_FUNCTION_NAME \
+            --memory-size 1024 \
+            --timeout 300 \
+            --environment Variables='{
+              "AWS_DEFAULT_REGION":"'$AWS_REGION'",
+              "S3_BUCKET_NAME":"'$S3_BUCKET'"
+            }'
+        else
+          echo "Creando nueva función Lambda..."
+          aws lambda create-function \
+            --function-name $LAMBDA_FUNCTION_NAME \
+            --package-type Image \
+            --code ImageUri=$IMAGE_URI \
+            --role ${{ steps.create-role.outputs.lambda-role-arn }} \
+            --memory-size 1024 \
+            --timeout 300 \
+            --environment Variables='{
+              "AWS_DEFAULT_REGION":"'$AWS_REGION'",
+              "S3_BUCKET_NAME":"'$S3_BUCKET'"
+            }'
+        fi
+        
+        # Esperar que la función esté activa
+        aws lambda wait function-active --function-name $LAMBDA_FUNCTION_NAME
+        
+        # Obtener la URL de invocación
+        FUNCTION_ARN=$(aws lambda get-function --function-name $LAMBDA_FUNCTION_NAME --query 'Configuration.FunctionArn' --output text)
+        echo "function-arn=$FUNCTION_ARN" >> $GITHUB_OUTPUT
+      id: deploy-lambda
+    
+    - name: Create Lambda function URL (optional)
+      run: |
+        # Crear URL pública para la función (opcional)
+        aws lambda create-function-url-config \
+          --function-name $LAMBDA_FUNCTION_NAME \
+          --auth-type NONE \
+          --cors '{
+            "AllowCredentials": false,
+            "AllowHeaders": ["content-type", "x-amz-date", "authorization", "x-api-key"],
+            "AllowMethods": ["POST", "GET", "OPTIONS"],
+            "AllowOrigins": ["*"],
+            "ExposeHeaders": ["x-amz-request-id"],
+            "MaxAge": 86400
+          }' 2>/dev/null || echo "Function URL might already exist"
+        
+        # Obtener la URL
+        FUNCTION_URL=$(aws lambda get-function-url-config --function-name $LAMBDA_FUNCTION_NAME --query 'FunctionUrl' --output text 2>/dev/null || echo "No URL configured")
+        echo "function-url=$FUNCTION_URL" >> $GITHUB_OUTPUT
+      id: create-url
+    
+    - name: Test Lambda function
+      run: |
+        echo "Probando la función Lambda..."
+        
+        # Crear datos de prueba
+        cat > test-payload.json << EOF
+        {
+          "date": "2024-01-15",
+          "time": "08:30:00",
+          "customer_id": "CID123456",
+          "vehicle_type": "Auto",
+          "pickup_location": "Khan Market",
+          "drop_location": "Central Secretariat"
+        }
+        EOF
+        
+        # Invocar función
+        aws lambda invoke \
+          --function-name $LAMBDA_FUNCTION_NAME \
+          --payload file://test-payload.json \
+          --cli-binary-format raw-in-base64-out \
+          response.json
+        
+        # Mostrar respuesta
+        echo "Respuesta de la función:"
+        cat response.json
+        echo ""
+        
+        # Verificar que la respuesta sea válida
+        if grep -q '"statusCode": 200' response.json; then
+          echo "✅ Test exitoso - Lambda respondió correctamente"
+        elif grep -q '"statusCode": 500' response.json; then
+          echo "⚠️  Lambda respondió con error 500 - revisar logs"
+          # Mostrar logs recientes
+          aws logs describe-log-streams \
+            --log-group-name "/aws/lambda/$LAMBDA_FUNCTION_NAME" \
+            --order-by LastEventTime \
+            --descending \
+            --max-items 1 \
+            --query 'logStreams[0].logStreamName' \
+            --output text | head -1 | xargs -I {} aws logs get-log-events \
+            --log-group-name "/aws/lambda/$LAMBDA_FUNCTION_NAME" \
+            --log-stream-name {} \
+            --limit 10
+        else
+          echo "⚠️  Respuesta inesperada de Lambda"
+        fi
+    
+    - name: Create API Gateway (optional)
+      run: |
+        echo "Configurando API Gateway para la función Lambda..."
+        
+        # Crear API Gateway REST API
+        API_ID=$(aws apigateway create-rest-api \
+          --name "uber-driver-prediction-api" \
+          --description "API for Uber driver availability prediction" \
+          --query 'id' --output text 2>/dev/null || \
+          aws apigateway get-rest-apis \
+          --query 'items[?name==`uber-driver-prediction-api`].id' \
+          --output text)
+        
+        if [ -n "$API_ID" ] && [ "$API_ID" != "None" ]; then
+          echo "API Gateway ID: $API_ID"
+          
+          # Obtener el root resource ID
+          ROOT_RESOURCE_ID=$(aws apigateway get-resources --rest-api-id $API_ID --query 'items[?path==`/`].id' --output text)
+          
+          # Crear recurso /predict
+          RESOURCE_ID=$(aws apigateway create-resource \
+            --rest-api-id $API_ID \
+            --parent-id $ROOT_RESOURCE_ID \
+            --path-part "predict" \
+            --query 'id' --output text 2>/dev/null || \
+            aws apigateway get-resources --rest-api-id $API_ID --query 'items[?pathPart==`predict`].id' --output text)
+          
+          if [ -n "$RESOURCE_ID" ] && [ "$RESOURCE_ID" != "None" ]; then
+            # Crear método POST
+            aws apigateway put-method \
+              --rest-api-id $API_ID \
+              --resource-id $RESOURCE_ID \
+              --http-method POST \
+              --authorization-type NONE 2>/dev/null || true
+            
+            # Integrar con Lambda
+            ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+            aws apigateway put-integration \
+              --rest-api-id $API_ID \
+              --resource-id $RESOURCE_ID \
+              --http-method POST \
+              --type AWS_PROXY \
+              --integration-http-method POST \
+              --uri "arn:aws:apigateway:$AWS_REGION:lambda:path/2015-03-31/functions/arn:aws:lambda:$AWS_REGION:$ACCOUNT_ID:function:$LAMBDA_FUNCTION_NAME/invocations" 2>/dev/null || true
+            
+            # Dar permisos a API Gateway para invocar Lambda
+            aws lambda add-permission \
+              --function-name $LAMBDA_FUNCTION_NAME \
+              --statement-id apigateway-invoke-permissions \
+              --action lambda:InvokeFunction \
+              --principal apigateway.amazonaws.com \
+              --source-arn "arn:aws:execute-api:$AWS_REGION:$ACCOUNT_ID:$API_ID/*/*" 2>/dev/null || true
+            
+            # Desplegar API
+            aws apigateway create-deployment \
+              --rest-api-id $API_ID \
+              --stage-name prod 2>/dev/null || true
+            
+            API_URL="https://$API_ID.execute-api.$AWS_REGION.amazonaws.com/prod/predict"
+            echo "api-url=$API_URL" >> $GITHUB_OUTPUT
+            echo "✅ API Gateway configurado: $API_URL"
+          fi
+        fi
+      id: create-api
+    
+    - name: Deployment summary
+      if: always()
+      run: |
+        echo "🚀 Lambda Deployment Summary"
+        echo "================================"
+        echo "Function ARN: ${{ steps.deploy-lambda.outputs.function-arn }}"
+        echo "Function URL: ${{ steps.create-url.outputs.function-url }}"
+        echo "API Gateway URL: ${{ steps.create-api.outputs.api-url }}"
+        echo ""
+        if [ "${{ job.status }}" == "success" ]; then
+          echo "✅ Deployment completed successfully!"
+          echo ""
+          echo "📋 Test command:"
+          echo 'curl -X POST "${{ steps.create-url.outputs.function-url }}" \'
+          echo '  -H "Content-Type: application/json" \'
+          echo '  -d "{
+            \"date\": \"2024-01-15\",
+            \"time\": \"08:30:00\",
+            \"customer_id\": \"CID123456\",
+            \"vehicle_type\": \"Auto\",
+            \"pickup_location\": \"Khan Market\",
+            \"drop_location\": \"Central Secretariat\"
+          }"'
+        else
+          echo "❌ Deployment failed"
+        fi
