@@ -1,0 +1,27 @@
+# Dockerfile para Lambda (predicción)
+FROM public.ecr.aws/lambda/python:3.9
+
+# Instalar dependencias del sistema si son necesarias
+RUN yum update -y && yum install -y gcc
+
+# Copiar requirements específicos para Lambda
+COPY requirements-lambda.txt .
+
+# Instalar dependencias Python
+RUN pip install --no-cache-dir -r requirements-lambda.txt
+
+# Copiar código fuente
+COPY src/ ${LAMBDA_TASK_ROOT}/src/
+
+# Copiar función Lambda
+COPY lambda/ ${LAMBDA_TASK_ROOT}/
+
+# Establecer PYTHONPATH
+ENV PYTHONPATH=${LAMBDA_TASK_ROOT}
+
+# Variables de entorno para AWS
+ENV AWS_DEFAULT_REGION=us-east-1
+ENV S3_BUCKET_NAME=uber-ml-models-bucket
+
+# Comando Lambda
+CMD ["lambda_function.lambda_handler"]

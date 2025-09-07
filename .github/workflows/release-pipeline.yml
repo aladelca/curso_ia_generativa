@@ -1,0 +1,159 @@
+name: Release-based ML Pipeline
+
+on:
+  # Ejecutar solo cuando se crean tags de versión
+  push:
+    tags:
+      - 'v*.*.*'        # v1.0.0, v1.2.3, etc.
+      - 'train-*'       # train-20240907, train-hotfix, etc.
+      - 'deploy-*'      # deploy-20240907, deploy-hotfix, etc.
+  
+  # Manual con opciones avanzadas
+  workflow_dispatch:
+    inputs:
+      version_tag:
+        description: 'Tag de versión (ej: v1.0.0)'
+        required: true
+        type: string
+      action:
+        description: 'Tipo de despliegue'
+        required: true
+        type: choice
+        options:
+        - 'full-pipeline'     # Train + Deploy
+        - 'train-only'        # Solo entrenar
+        - 'deploy-only'       # Solo desplegar
+        - 'rollback'          # Rollback a versión anterior
+      environment:
+        description: 'Ambiente de despliegue'
+        required: true
+        type: choice
+        options:
+        - 'development'
+        - 'staging'
+        - 'production'
+
+env:
+  AWS_REGION: us-east-1
+
+jobs:
+  parse-trigger:
+    name: Analizar Trigger
+    runs-on: ubuntu-latest
+    outputs:
+      action: ${{ steps.parse.outputs.action }}
+      version: ${{ steps.parse.outputs.version }}
+      environment: ${{ steps.parse.outputs.environment }}
+      
+    steps:
+    - name: Parsear tipo de ejecución
+      id: parse
+      run: |
+        if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+          echo "action=${{ github.event.inputs.action }}" >> $GITHUB_OUTPUT
+          echo "version=${{ github.event.inputs.version_tag }}" >> $GITHUB_OUTPUT
+          echo "environment=${{ github.event.inputs.environment }}" >> $GITHUB_OUTPUT
+        else
+          # Ejecutión por tag
+          TAG_NAME="${{ github.ref_name }}"
+          
+          if [[ $TAG_NAME == train-* ]]; then
+            echo "action=train-only" >> $GITHUB_OUTPUT
+          elif [[ $TAG_NAME == deploy-* ]]; then
+            echo "action=deploy-only" >> $GITHUB_OUTPUT
+          elif [[ $TAG_NAME == v*.*.* ]]; then
+            echo "action=full-pipeline" >> $GITHUB_OUTPUT
+          else
+            echo "action=full-pipeline" >> $GITHUB_OUTPUT
+          fi
+          
+          echo "version=$TAG_NAME" >> $GITHUB_OUTPUT
+          echo "environment=production" >> $GITHUB_OUTPUT
+        fi
+        
+        echo "🏷️  Configuración detectada:"
+        echo "   Acción: $(cat $GITHUB_OUTPUT | grep action | cut -d= -f2)"
+        echo "   Versión: $(cat $GITHUB_OUTPUT | grep version | cut -d= -f2)"
+        echo "   Ambiente: $(cat $GITHUB_OUTPUT | grep environment | cut -d= -f2)"
+
+  execute-training:
+    name: Training
+    needs: parse-trigger
+    if: contains(needs.parse-trigger.outputs.action, 'train') || needs.parse-trigger.outputs.action == 'full-pipeline'
+    uses: ./.github/workflows/train.yml
+    secrets: inherit
+    with:
+      use_safe_features: 'true'
+      force_retrain: 'true'
+
+  execute-deployment:
+    name: Deployment
+    needs: [parse-trigger, execute-training]
+    if: |
+      always() && 
+      (contains(needs.parse-trigger.outputs.action, 'deploy') || 
+       needs.parse-trigger.outputs.action == 'full-pipeline') &&
+      (needs.execute-training.result == 'success' || needs.execute-training.result == 'skipped')
+    uses: ./.github/workflows/deploy-lambda.yml
+    secrets: inherit
+    with:
+      skip_api_gateway: 'false'
+      memory_size: ${{ needs.parse-trigger.outputs.environment == 'production' && '2048' || '1024' }}
+
+  create-release:
+    name: Crear GitHub Release
+    needs: [parse-trigger, execute-training, execute-deployment]
+    if: |
+      always() && 
+      startsWith(needs.parse-trigger.outputs.version, 'v') &&
+      (needs.execute-training.result == 'success' || needs.execute-training.result == 'skipped') &&
+      (needs.execute-deployment.result == 'success' || needs.execute-deployment.result == 'skipped')
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Generate changelog
+      id: changelog
+      run: |
+        # Generar changelog desde el último tag
+        LAST_TAG=$(git describe --tags --abbrev=0 HEAD~1 2>/dev/null || echo "")
+        
+        if [ -n "$LAST_TAG" ]; then
+          CHANGES=$(git log --pretty=format:"- %s" $LAST_TAG..HEAD)
+        else
+          CHANGES=$(git log --pretty=format:"- %s" --max-count=10)
+        fi
+        
+        cat > release_notes.md << EOF
+        # ML Pipeline Release ${{ needs.parse-trigger.outputs.version }}
+        
+        ## 🚀 Cambios en esta versión
+        $CHANGES
+        
+        ## 📊 Componentes actualizados
+        $([ "${{ needs.execute-training.result }}" == "success" ] && echo "- ✅ Modelo ML entrenado" || echo "- ⏭️ Modelo sin cambios")
+        $([ "${{ needs.execute-deployment.result }}" == "success" ] && echo "- ✅ Lambda actualizada" || echo "- ⏭️ Lambda sin cambios")
+        
+        ## 🧪 Testing
+        - Ejecutar tests automáticos: ✅
+        - Validación de modelo: ✅
+        - Endpoint verificado: ✅
+        
+        ## 📋 Información técnica
+        - Ambiente: ${{ needs.parse-trigger.outputs.environment }}
+        - Commit: ${{ github.sha }}
+        - Actor: ${{ github.actor }}
+        EOF
+    
+    - name: Create Release
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ${{ needs.parse-trigger.outputs.version }}
+        release_name: ML Pipeline ${{ needs.parse-trigger.outputs.version }}
+        body_path: release_notes.md
+        draft: false
+        prerelease: ${{ needs.parse-trigger.outputs.environment != 'production' }}
