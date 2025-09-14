@@ -1,3 +1,5 @@
 openai
 mysql-connector-python
 python-dotenv
+langchain
+langchain-community

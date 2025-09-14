@@ -1,7 +1,9 @@
 import os
-import openai
-import mysql.connector
 from dotenv import load_dotenv
+from langchain_community.llms import OpenAI
+from langchain_community.utilities.sql_database import SQLDatabase
+import pandas as pd
+import re
 
 # Load environment variables
 load_dotenv()
@@ -12,88 +14,82 @@ MYSQL_USER = os.getenv('MYSQL_USER')
 MYSQL_PASSWORD = os.getenv('MYSQL_PASSWORD')
 MYSQL_DATABASE = os.getenv('MYSQL_DATABASE')
 
-openai.api_key = OPENAI_API_KEY
+def get_mysql_uri():
+    return f"mysql+mysqlconnector://{MYSQL_USER}:{MYSQL_PASSWORD}@{MYSQL_HOST}/{MYSQL_DATABASE}"
 
-def natural_language_to_sql(nl_query, db_schema):
-    """
-    Use OpenAI API to convert a natural language query to SQL.
-    Only allows descriptive (SELECT) queries.
-    The schema of all tables is provided so the model can infer the correct table.
-    """
+def get_schema_summary(db):
+    """Obtener un resumen del esquema de la base de datos"""
+    try:
+        tables = db.get_usable_table_names()
+        schema_summary = "Tablas disponibles: " + ", ".join(tables)  # Solo las primeras 10 tablas
+        return schema_summary
+    except:
+        return "Base de datos MySQL con tablas de productos, ventas, clientes, etc."
+
+def generate_sql_query(user_question, schema_summary, llm):
+    """Generar consulta SQL usando OpenAI directamente"""
     prompt = f"""
-    You are an assistant that converts natural language questions into SQL SELECT queries for a MySQL database. 
-    Only generate SELECT statements. If the question is not descriptive or cannot be answered with a SELECT, respond with 'ERROR: Only descriptive queries are allowed.'
+Eres un experto en SQL para MySQL. Genera SOLO la consulta SQL para responder la pregunta.
+Reglas:
+- SOLO consultas SELECT (descriptivas)
+- Una sola línea de SQL
+- Sin explicaciones, sin comentarios
+- Si no es posible con SELECT, responde: 'ERROR: Solo se permiten consultas descriptivas.'
 
-    Database schema:
-    {db_schema}
+Esquema: {schema_summary}
 
-    Question: {nl_query}
-    SQL:"""
-    response = openai.Completion.create(
-        engine="text-davinci-003",
-        prompt=prompt,
-        max_tokens=150,
-        temperature=0,
-        stop=["#", "\n\n"]
-    )
-    sql = response.choices[0].text.strip()
-    if not sql.lower().startswith('select'):
-        raise ValueError('ERROR: Only descriptive queries are allowed.')
-    return sql
-
-def get_db_schema(cursor):
-    """
-    Returns the schema of all tables in the database as a string.
-    """
-    cursor.execute("SHOW TABLES")
-    tables = [row[0] for row in cursor.fetchall()]
-    schema_str = ""
-    for table in tables:
-        cursor.execute(f"DESCRIBE {table}")
-        columns = cursor.fetchall()
-        schema_str += f"Table: {table}\n"
-        for col in columns:
-            schema_str += f"  {col[0]} {col[1]}\n"
-        schema_str += "\n"
-    return schema_str
-
-def execute_sql_query(sql):
-    conn = mysql.connector.connect(
-        host=MYSQL_HOST,
-        user=MYSQL_USER,
-        password=MYSQL_PASSWORD,
-        database=MYSQL_DATABASE
-    )
-    cursor = conn.cursor()
-    cursor.execute(sql)
-    results = cursor.fetchall()
-    columns = [desc[0] for desc in cursor.description]
-    cursor.close()
-    conn.close()
-    return columns, results
+Pregunta: {user_question}
+SQL:"""
+    
+    response = llm.invoke(prompt)
+    sql_query = response.strip()
+    
+    # Limpiar la respuesta para obtener solo el SQL
+    if sql_query.lower().startswith('select'):
+        return sql_query
+    elif 'select' in sql_query.lower():
+        # Extraer solo la parte SELECT
+        match = re.search(r'(SELECT.*?(?:;|$))', sql_query, re.IGNORECASE | re.DOTALL)
+        if match:
+            return match.group(1).rstrip(';').strip()
+    
+    return sql_query
 
 def main():
-    nl_query = input("Pregunta en lenguaje natural: ")
-    try:
-        conn = mysql.connector.connect(
-            host=MYSQL_HOST,
-            user=MYSQL_USER,
-            password=MYSQL_PASSWORD,
-            database=MYSQL_DATABASE
-        )
-        cursor = conn.cursor()
-        db_schema = get_db_schema(cursor)
-        cursor.close()
-        conn.close()
-        sql = natural_language_to_sql(nl_query, db_schema)
-        print(f"Consulta generada: {sql}")
-        columns, results = execute_sql_query(sql)
-        print("Resultados:")
-        print(columns)
-        for row in results:
-            print(row)
-    except Exception as e:
-        print(f"Error: {e}")
+    db_uri = get_mysql_uri()
+    db = SQLDatabase.from_uri(db_uri)
+    llm = OpenAI(openai_api_key=OPENAI_API_KEY, temperature=0)
+    
+    # Obtener resumen del esquema una sola vez
+    schema_summary = get_schema_summary(db)
+    
+    print("Asistente conversacional para consultas SQL. Escribe 'salir' para terminar.")
+    chat_history = []
+    
+    while True:
+        user_input = input("Usuario: ")
+        if user_input.strip().lower() in ["salir", "exit", "quit"]:
+            print("Adiós!")
+            break
+            
+        try:
+            sql_query = generate_sql_query(user_input, schema_summary, llm)
+            print(f"Consulta generada:\n{sql_query}")
+            
+            # Ejecutar la consulta y mostrar como DataFrame
+            if sql_query.lower().startswith('select'):
+                try:
+                    df = pd.read_sql(sql_query, db._engine)
+                    print("Resultado (DataFrame):")
+                    print(df)
+                except Exception as ex:
+                    print(f"Error al ejecutar la consulta SQL: {ex}")
+            else:
+                print(sql_query)  # Mostrar mensaje de error
+                
+            chat_history.append((user_input, sql_query))
+        except Exception as e:
+            print(f"Error: {e}")
 
 if __name__ == "__main__":
     main()
