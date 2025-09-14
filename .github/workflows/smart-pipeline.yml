@@ -1,0 +1,192 @@
+name: Smart ML Pipeline Controller
+
+on:
+  # Solo manual o en horarios específicos
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Acción a realizar'
+        required: true
+        type: choice
+        options:
+        - 'train-only'
+        - 'deploy-only'
+        - 'train-and-deploy'
+        - 'check-status'
+      use_safe_features:
+        description: 'Usar features seguras (solo para training)'
+        required: false
+        default: 'true'
+        type: boolean
+      skip_tests:
+        description: 'Omitir tests automáticos'
+        required: false
+        default: 'false'
+        type: boolean
+  
+  # Entrenamiento automático semanal (Domingos a las 2 AM UTC)
+  schedule:
+    - cron: '0 2 * * 0'
+
+env:
+  AWS_REGION: us-east-1
+  S3_BUCKET: uber-ml-models-bucket
+
+jobs:
+  check-changes:
+    name: Detectar Cambios Necesarios
+    runs-on: ubuntu-latest
+    outputs:
+      needs-training: ${{ steps.check.outputs.needs-training }}
+      needs-deployment: ${{ steps.check.outputs.needs-deployment }}
+      last-model-age: ${{ steps.check.outputs.last-model-age }}
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0  # Necesario para comparar commits
+    
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+    
+    - name: Analizar cambios y estado
+      id: check
+      run: |
+        echo "🔍 Analizando necesidad de training y deployment..."
+        
+        NEEDS_TRAINING="false"
+        NEEDS_DEPLOYMENT="false"
+        
+        # Verificar si es ejecución manual
+        if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+          ACTION="${{ github.event.inputs.action }}"
+          case $ACTION in
+            "train-only"|"train-and-deploy")
+              NEEDS_TRAINING="true"
+              ;;
+            "deploy-only"|"train-and-deploy")
+              NEEDS_DEPLOYMENT="true"
+              ;;
+            "check-status")
+              # Solo verificar estado, no ejecutar nada
+              ;;
+          esac
+        fi
+        
+        # Verificar si es ejecución programada (semanal)
+        if [ "${{ github.event_name }}" == "schedule" ]; then
+          NEEDS_TRAINING="true"  # Entrenamiento semanal automático
+        fi
+        
+        # Si es push, verificar qué archivos cambiaron
+        if [ "${{ github.event_name }}" == "push" ]; then
+          # Obtener archivos cambiados en el último commit
+          CHANGED_FILES=$(git diff --name-only HEAD~1 HEAD)
+          
+          # Verificar si hay cambios que requieren entrenamiento
+          if echo "$CHANGED_FILES" | grep -E "(uber/src/training|uber/src/preprocessing|uber/src/constants|uber/data/)" > /dev/null; then
+            NEEDS_TRAINING="true"
+            echo "📊 Cambios detectados en archivos de training"
+          fi
+          
+          # Verificar si hay cambios que requieren deployment
+          if echo "$CHANGED_FILES" | grep -E "(uber/src/prediction|uber/lambda/|uber/src/aws_config|uber/src/s3_model)" > /dev/null; then
+            NEEDS_DEPLOYMENT="true"
+            echo "🚀 Cambios detectados en archivos de prediction"
+          fi
+        fi
+        
+        # Verificar edad del último modelo en S3
+        LAST_MODEL_AGE=""
+        if aws s3 ls s3://$S3_BUCKET/models/ > /dev/null 2>&1; then
+          LATEST_MODEL=$(aws s3 ls s3://$S3_BUCKET/models/ --recursive | sort | tail -n 1 | awk '{print $1, $2}')
+          if [ -n "$LATEST_MODEL" ]; then
+            # Calcular días desde la última modificación
+            LAST_MODIFIED=$(echo $LATEST_MODEL | awk '{print $1"T"$2}')
+            CURRENT_DATE=$(date -u +%Y-%m-%dT%H:%M:%S)
+            
+            # Simplificado: si no hay modelo o es muy antiguo (>7 días), entrenar
+            DAYS_OLD=$(( ($(date -d "$CURRENT_DATE" +%s) - $(date -d "$LAST_MODIFIED" +%s)) / 86400 ))
+            LAST_MODEL_AGE="$DAYS_OLD"
+            
+            if [ $DAYS_OLD -gt 7 ] && [ "$NEEDS_TRAINING" == "false" ]; then
+              echo "⚠️  Modelo muy antiguo ($DAYS_OLD días), programando entrenamiento"
+              NEEDS_TRAINING="true"
+            fi
+          fi
+        else
+          echo "📁 No hay modelos en S3, entrenamiento necesario"
+          NEEDS_TRAINING="true"
+          LAST_MODEL_AGE="N/A"
+        fi
+        
+        echo "needs-training=$NEEDS_TRAINING" >> $GITHUB_OUTPUT
+        echo "needs-deployment=$NEEDS_DEPLOYMENT" >> $GITHUB_OUTPUT
+        echo "last-model-age=$LAST_MODEL_AGE" >> $GITHUB_OUTPUT
+        
+        echo "📋 Resumen de decisiones:"
+        echo "   Entrenamiento necesario: $NEEDS_TRAINING"
+        echo "   Deployment necesario: $NEEDS_DEPLOYMENT"
+        echo "   Edad último modelo: $LAST_MODEL_AGE días"
+
+  trigger-training:
+    name: Ejecutar Training Pipeline
+    needs: check-changes
+    if: needs.check-changes.outputs.needs-training == 'true'
+    uses: ./.github/workflows/train.yml
+    secrets: inherit
+    with:
+      use_safe_features: ${{ github.event.inputs.use_safe_features || 'true' }}
+
+  trigger-deployment:
+    name: Ejecutar Deployment Pipeline
+    needs: [check-changes, trigger-training]
+    if: |
+      always() && 
+      (needs.check-changes.outputs.needs-deployment == 'true' || 
+       (needs.trigger-training.result == 'success' && needs.check-changes.outputs.needs-training == 'true'))
+    uses: ./.github/workflows/deploy-lambda.yml
+    secrets: inherit
+    with:
+      skip_api_gateway: ${{ github.event.inputs.skip_tests || 'false' }}
+
+  status-report:
+    name: Reporte de Estado
+    needs: [check-changes, trigger-training, trigger-deployment]
+    if: always()
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Generar reporte
+      run: |
+        echo "📊 Reporte de Ejecución ML Pipeline"
+        echo "==================================="
+        echo "Trigger: ${{ github.event_name }}"
+        echo "Acción solicitada: ${{ github.event.inputs.action || 'automática' }}"
+        echo ""
+        echo "🔍 Análisis de Cambios:"
+        echo "   Entrenamiento necesario: ${{ needs.check-changes.outputs.needs-training }}"
+        echo "   Deployment necesario: ${{ needs.check-changes.outputs.needs-deployment }}"
+        echo "   Edad último modelo: ${{ needs.check-changes.outputs.last-model-age }} días"
+        echo ""
+        echo "🚀 Resultados de Ejecución:"
+        echo "   Training: ${{ needs.trigger-training.result || 'omitido' }}"
+        echo "   Deployment: ${{ needs.trigger-deployment.result || 'omitido' }}"
+        echo ""
+        
+        if [ "${{ needs.trigger-training.result }}" == "success" ]; then
+          echo "✅ Nuevo modelo entrenado y disponible"
+        fi
+        
+        if [ "${{ needs.trigger-deployment.result }}" == "success" ]; then
+          echo "✅ Deployment actualizado"
+        fi
+        
+        if [ "${{ needs.check-changes.outputs.needs-training }}" == "false" ] && [ "${{ needs.check-changes.outputs.needs-deployment }}" == "false" ]; then
+          echo "ℹ️  No se detectaron cambios que requieran acción"
+        fi

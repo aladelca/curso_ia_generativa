@@ -1,0 +1,40 @@
+# Dockerfile para entrenamiento en ECS
+FROM python:3.9-slim
+
+# Instalar dependencias del sistema
+RUN apt-get update && apt-get install -y \
+    gcc \
+    g++ \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Establecer directorio de trabajo
+WORKDIR /app
+
+# Copiar requirements
+COPY requirements.txt .
+
+# Instalar dependencias Python
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copiar código fuente
+COPY src/ ./src/
+
+# Crear directorio de datos
+RUN mkdir -p ./data/
+
+# Copiar dataset si existe localmente
+COPY uber/data/ ./data/ 2>/dev/null || echo "No local data directory found"
+
+# Establecer PYTHONPATH
+ENV PYTHONPATH=/app
+
+# Variables de entorno para AWS
+ENV AWS_DEFAULT_REGION=us-east-1
+ENV S3_BUCKET_NAME=uber-ml-models-bucket
+
+# Script de entrenamiento
+COPY docker/train_script.py .
+
+# Comando por defecto
+CMD ["python", "train_script.py"]
